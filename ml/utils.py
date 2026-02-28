@@ -140,6 +140,29 @@ def log_elapsed_remaining_total_time(
     print(f"REMAINING TIME: {r_hours}h {r_minutes}m {r_seconds:.2f}s")
     print(f"TOTAL TIME: {t_hours}h {t_minutes}m {t_seconds:.2f}s")
 
+class EarlyStopping:
+    def __init__(self, patience: int, objective: Literal["minimize", "maximize"], metric_name: str) -> None:
+        self.patience = patience
+        self.objective = objective
+        self.metric_name = metric_name
+        self._counter = 0
+        self._best = float("inf") if objective == "minimize" else float("-inf")
+
+    def __call__(self, model_stats: List[Result]) -> bool:
+        value = next((r.get_value() for r in model_stats if r.get_name() == self.metric_name), None)
+        assert value is not None, f"Metric {self.metric_name} not found"
+
+        improved = value < self._best if self.objective == "minimize" else value > self._best
+        if improved:
+            self._best = value
+            self._counter = 0
+        else:
+            self._counter += 1
+
+        if self._counter >= self.patience:
+            print(f"Early stopping triggered after {self._counter} epochs without improvement.")
+            return True
+        return False
 
 class ConditionalSave:
     """
@@ -206,6 +229,9 @@ class ConditionalSave:
                 if os.path.exists(ckpt_file):
                     os.remove(ckpt_file)
             self.__checkpoint_files = self.__checkpoint_files[-1:]
+    
+    def get_best_checkpoint(self) -> str | None:
+        return self.__checkpoint_files[0] if self.__checkpoint_files else None
 
 
 def hamming_encode(bits: List[bool]) -> List[bool]:

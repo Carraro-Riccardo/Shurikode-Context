@@ -2,6 +2,9 @@ from typing import Callable, Dict, List, Sequence
 from torch.utils.data import DataLoader
 from torch.optim import Optimizer
 from torch import Tensor
+from torch.optim.lr_scheduler import LambdaLR
+from sklearn.metrics import classification_report
+import pandas as pd
 
 from utils import (
     ModelEvaluationFunction,
@@ -9,6 +12,7 @@ from utils import (
     ConsoleStatsLogger,
     ConditionalSave,
     Result,
+    EarlyStopping,
 )
 from custom_types import DeviceType
 
@@ -16,111 +20,40 @@ import torch.nn as nn
 import time
 import torch
 import wandb
+from tqdm import tqdm
 
+def train(model, loss_function, optimizer, scheduler,
+          train_dataloader, val_dataloader, device,
+          evaluation_functions, epoch_n, saver, early_stopping=None):
 
-def train(
-    model: nn.Module,
-    loss_function: Callable[[Tensor, Tensor], Tensor],
-    optimizer: Optimizer,
-    train_dataloader: DataLoader,
-    val_dataloader: DataLoader,
-    clean_dataloader: DataLoader,
-    device: DeviceType,
-    evaluation_functions: Sequence[ModelEvaluationFunction],
-    epoch_n: int,
-    saver: ConditionalSave,
-):
     console_logger = ConsoleStatsLogger(epoch_n)
     elapsed_time = 0
 
     for i in range(epoch_n):
         start_time_epoch = time.time()
 
-        # Train the model on the train dataset
         train_epoch(
-            model,
-            loss_function,
-            optimizer,
-            train_dataloader,
-            device,
-            evaluation_functions,
+            model, loss_function, optimizer, train_dataloader,
+            device, evaluation_functions, epoch=i, epoch_n=epoch_n
         )
 
-        # Validate the model on the validation dataset
         val_stats = validate_model(
-            model, loss_function, val_dataloader, device, evaluation_functions
+            model, loss_function, val_dataloader, device,
+            evaluation_functions, prefix="val", epoch=i
         )
-        console_logger("Validation", val_stats, i)
 
-        # Saving the model if it's performing better than the previously saved model
+        # Stampa validazione in console
+        val_str = " | ".join([f"{r.get_name()}: {r.get_value():.4f}" for r in val_stats])
+        print(f"\n[Val] Epoch {i}/{epoch_n-1} → {val_str}")
+
+        scheduler.step()
         saver(model, val_stats, i)
 
-        # Validate the model on the clean (non augmented) dataset
-        clean_stats = validate_model(
-            model, loss_function, clean_dataloader, device, evaluation_functions
-        )
-        console_logger("Clean", clean_stats, i)
-
-        # Logging on console time metrics
-        end_time_epoch = time.time()
-        elapsed_time += end_time_epoch - start_time_epoch
+        elapsed_time += time.time() - start_time_epoch
         log_elapsed_remaining_total_time(elapsed_time, i + 1, epoch_n)
 
-
-def finetune(
-    model: nn.Module,
-    loss_function: Callable[[Tensor, Tensor], Tensor],
-    optimizer: Optimizer,
-    train_dataloader: DataLoader,
-    val_dataloader: DataLoader,
-    clean_dataloader: DataLoader,
-    real_val_dataloader: DataLoader,
-    device: DeviceType,
-    evaluation_functions: Sequence[ModelEvaluationFunction],
-    epoch_n: int,
-    saver: ConditionalSave,
-):
-    console_logger = ConsoleStatsLogger(epoch_n)
-    elapsed_time = 0
-
-    for i in range(epoch_n):
-        start_time_epoch = time.time()
-
-        # Train the model on the train dataset
-        train_epoch(
-            model,
-            loss_function,
-            optimizer,
-            train_dataloader,
-            device,
-            evaluation_functions,
-        )
-
-        # Validate the model on the validation dataset
-        val_stats = validate_model(
-            model, loss_function, val_dataloader, device, evaluation_functions
-        )
-        console_logger("Validation", val_stats, i)
-
-        # Saving the model if it's performing better than the previously saved model
-        saver(model, val_stats, i)
-
-        # Validate the model on the clean (non augmented) dataset
-        clean_stats = validate_model(
-            model, loss_function, clean_dataloader, device, evaluation_functions
-        )
-        console_logger("Clean", clean_stats, i)
-
-        # Validate the model on the real dataset
-        real_stats = validate_model(
-            model, loss_function, real_val_dataloader, device, evaluation_functions
-        )
-        console_logger("Real", real_stats, i)
-
-        # Logging on console time metrics
-        end_time_epoch = time.time()
-        elapsed_time += end_time_epoch - start_time_epoch
-        log_elapsed_remaining_total_time(elapsed_time, i + 1, epoch_n)
+        if early_stopping and early_stopping(val_stats):
+            break
 
 
 def train_epoch(
@@ -130,38 +63,44 @@ def train_epoch(
     dataloader: DataLoader,
     device: DeviceType,
     evaluation_functions: Sequence[ModelEvaluationFunction],
+    epoch: int = 0,
+    epoch_n: int = 0,
 ):
-    """
-    Given the model and the evaluation functions to be used, it trains the model on a single epoch, while loggin the
-    various collected statistics in wandb.
-
-    :param model: The model that will be trained.
-    :param loss_function: The loss function to be used for training.
-    :param optimizer: The optimizer that will be used for training.
-    :param dataloader: The dataloader that will be used for training.
-    :param device: The device that will be used to compute operations.
-    :param evaluation_functions: A list of different evaluation functions that will be used to evaluate the model.
-    """
     model.train()
 
-    # Retrieving the batch sample & ground truth
-    for img, gt in dataloader:
+    running_loss = 0.0
+    running_evals = {ef.get_name(): 0.0 for ef in evaluation_functions}
+
+    pbar = tqdm(dataloader, desc=f"Epoch {epoch}/{epoch_n-1} [Train]", leave=True)
+
+    for batch_idx, (img, gt) in enumerate(pbar):
         img, gt = img.to(device), gt.to(device)
 
-        # Calculating prediction and loss
         pred: Tensor = model(img)
         loss: Tensor = loss_function(pred, gt)
 
-        # Optimizing
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
-        # Calculating statistics and logging
+        # Running averages
+        running_loss = ((running_loss * batch_idx) + loss.item()) / (batch_idx + 1)
         evals: Dict[str, float] = {}
         for eval_func in evaluation_functions:
-            evals[eval_func.get_name()] = eval_func(pred, gt).get_value()
-        wandb.log({"loss": loss.item(), **evals})
+            val = eval_func(pred, gt).get_value()
+            evals[eval_func.get_name()] = val
+            running_evals[eval_func.get_name()] = (
+                (running_evals[eval_func.get_name()] * batch_idx) + val
+            ) / (batch_idx + 1)
+
+        # Aggiorna la barra con loss e metriche correnti
+        pbar.set_postfix({
+            "loss": f"{running_loss:.4f}",
+            **{k: f"{v:.4f}" for k, v in running_evals.items()},
+            "lr": f"{optimizer.param_groups[0]['lr']:.6f}",
+        })
+
+        wandb.log({"loss": loss.item(), "lr": optimizer.param_groups[0]["lr"], **evals})
 
 
 def validate_model(
@@ -170,34 +109,20 @@ def validate_model(
     dataloader: DataLoader,
     device: DeviceType,
     evaluation_functions: Sequence[ModelEvaluationFunction],
+    prefix="val",
+    epoch=0,
 ) -> List[Result]:
-    """
-    Given the model and the evaluation functions to be used, it will evaluate the model and return the collected
-    statistics.
-
-    :param model: The model that will be trained.
-    :param loss_function: The loss function that was used for training
-    :param dataloader: The dataloader that will be used for validation.
-    :param device: The device that will be used to compute operations.
-    :param evaluation_functions: A list of different evaluation functions that will be used to evaluate the model.
-
-    :return: A list of the various evaluation statistics.
-    """
     model.eval()
-
     evals = [0.0] * len(evaluation_functions)
     avg_loss = 0
 
     with torch.no_grad():
         for batch_idx, (img, gt) in enumerate(dataloader):
             img, gt = img.to(device), gt.to(device)
-
-            pred: torch.Tensor = model(img)
-            loss: torch.Tensor = loss_function(pred, gt)
-
-            # Calculating dynamically the average statistics
+            pred = model(img)
+            loss = loss_function(pred, gt)
             avg_loss = ((avg_loss * batch_idx) + loss.item()) / (batch_idx + 1)
-            for func_idx, (eval_func) in enumerate(evaluation_functions):
+            for func_idx, eval_func in enumerate(evaluation_functions):
                 evals[func_idx] = (
                     (evals[func_idx] * batch_idx) + eval_func(pred, gt).get_value()
                 ) / (batch_idx + 1)
@@ -206,4 +131,41 @@ def validate_model(
         Result(evaluation_functions[i].get_name(), evals[i])
         for i in range(len(evaluation_functions))
     ]
+    wandb.log({
+        f"{prefix}/loss": avg_loss,
+        **{f"{prefix}/{e.get_name()}": e.get_value() for e in stats_w_names},
+        "val_epoch": epoch,
+    }, commit=True)
     return stats_w_names
+
+def log_confusion_matrix(model, dataloader, device, n_classes, prefix="val"):
+    model.eval()
+    all_preds, all_gts = [], []
+    with torch.no_grad():
+        for img, gt in dataloader:
+            img = img.to(device)
+            pred = model(img).argmax(dim=1).cpu()
+            all_preds.extend(pred.tolist())
+            all_gts.extend(gt.tolist())
+    
+    wandb.log({
+        f"{prefix}/confusion_matrix": wandb.plot.confusion_matrix(
+            preds=all_preds,
+            y_true=all_gts,
+            class_names=[str(i) for i in range(n_classes)]
+        )
+    })
+
+def log_per_class_metrics(model, dataloader, device, n_classes, prefix="val"):
+    model.eval()
+    all_preds, all_gts = [], []
+    with torch.no_grad():
+        for img, gt in dataloader:
+            img = img.to(device)
+            pred = model(img).argmax(dim=1).cpu()
+            all_preds.extend(pred.tolist())
+            all_gts.extend(gt.tolist())
+
+    report = classification_report(all_gts, all_preds, output_dict=True)
+    df = pd.DataFrame(report).T
+    wandb.log({f"{prefix}/per_class_metrics": wandb.Table(dataframe=df)})

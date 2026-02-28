@@ -1,1 +1,1 @@
-recursive-include src/shurikode/ml_model *.pth.tar
+recursive-include src/shurikodecontext/ml_model *.pth.tar
