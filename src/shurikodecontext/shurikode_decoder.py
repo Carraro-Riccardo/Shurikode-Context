@@ -56,7 +56,6 @@ class ShurikodeDecoder:
             top3 = torch.topk(probs, k=3)
             top3_labels = top3.indices.tolist()
             top3_confs  = top3.values.tolist()
-            print(f"Top 3 predictions: {list(zip(top3_labels, top3_confs))}")
             
         return label, confidence
 
