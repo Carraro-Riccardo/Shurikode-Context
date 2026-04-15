@@ -34,7 +34,7 @@ pip install .
 ### Encoder usage
 
 ```python
-from shurikode import Enc
+from shurikodecontext import Enc
 
 enc = Enc(size=10) # The size specifies the scale of the image that will be generated.
 
@@ -48,9 +48,9 @@ encoded_number.save(path="./") # Saves the encoded image in the specified path.
 ### Decoder usage
 
 ```python
-from shurikode import Dec
+from shurikodecontext import Dec
 
-dec = Dec("M") # Creates the decoder with medium size (you can even choose "S" for small and "L" for large size)
+dec = Dec("L") # Creates the decoder with Large size (Medium "M" and Small "S" version are work in progress)
 
 decoded_value: int = dec(encoded_PIL_image) # Returns the value encoded in the decoded image
 ```
