@@ -27,7 +27,7 @@ This code is designed for the really niche use case of extreme visual obfuscatio
 To install this package and all of its dependencies use the following command:
 
 ```bash
-cd Shurikode # Enter in the cloned repository folder
+cd Shurikode-Context # Enter in the cloned repository folder
 pip install .
 ```
 
