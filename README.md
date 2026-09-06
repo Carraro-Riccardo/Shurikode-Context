@@ -17,7 +17,7 @@ This version keeps the original encoding unchanged and replaces the decoder with
 | Python package | `shurikode` | `shurikodecontext` |
 | Decoder backbones | ResNet-18, ResNet-34, ResNet-50 | Retrained ResNet-18, ResNet-34, ResNet-50 |
 
-The original training pipeline already included several synthetic degradations—including random padding—and a real-image fine-tuning path. The two defining changes here are therefore the explicit negative class and the stronger emphasis on non-tightly-cropped contextual inputs, rather than the first-ever use of padding.
+The original training pipeline already included several synthetic degradations, including random padding, and a real-image fine-tuning path. The two defining changes here are therefore the explicit negative class and the stronger emphasis on non-tightly-cropped contextual inputs, rather than the first-ever use of padding.
 
 The context-aware decoder classifies the complete image supplied by the caller; it does not run a separate object detector or crop the code first. The code must therefore remain visible enough after the whole image is resized to 224×224. The returned confidence is the maximum softmax score, not a calibrated probability.
 
